@@ -516,7 +516,8 @@ class BasicTrainer(object):
         os.makedirs(dir_name, exist_ok=True)
         output_path = os.path.join(dir_name, filename)
         rank0_print(f'writing checkpoint to {output_path}...')
-        torch.save({
+        # xm.save moves XLA tensors to the CPU before saving
+        (xm.save if USE_XLA else torch.save)({
             'step_idx': step,
             'state': state,
             'metrics': metrics if metrics is not None else {},
