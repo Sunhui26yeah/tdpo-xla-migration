@@ -11,6 +11,14 @@ import socket
 import os
 from typing import Dict, Union, Type, List
 
+try:
+    import torch_xla.core.xla_model as xm
+    # use the XLA (TPU) device when torch_xla is installed and there is no CUDA device
+    USE_XLA = not torch.cuda.is_available()
+except ImportError:
+    xm = None
+    USE_XLA = False
+
 
 def get_open_port():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

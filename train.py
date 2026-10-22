@@ -3,7 +3,7 @@ import torch
 torch.backends.cuda.matmul.allow_tf32 = True
 import torch.nn as nn
 import transformers
-from utils import get_local_dir, get_local_run_dir, disable_dropout, init_distributed, get_open_port
+from utils import get_local_dir, get_local_run_dir, disable_dropout, init_distributed, get_open_port, USE_XLA
 import os
 import hydra
 import torch.multiprocessing as mp
@@ -20,7 +20,7 @@ OmegaConf.register_new_resolver("get_local_run_dir", lambda exp_name, local_dirs
 
 def worker_main(rank: int, world_size: int, config: DictConfig, policy: nn.Module, reference_model: Optional[nn.Module] = None):
     """Main function for each worker process (may be only 1 for BasicTrainer/TensorParallelTrainer)."""
-    if 'FSDP' in config.trainer:
+    if 'FSDP' in config.trainer and not USE_XLA:
         init_distributed(rank, world_size, port=config.fsdp_port)
 
     if config.debug:
@@ -37,7 +37,12 @@ def worker_main(rank: int, world_size: int, config: DictConfig, policy: nn.Modul
             name=config.exp_name,
         )
 
-    TrainerClass = getattr(trainers, config.trainer)
+    if USE_XLA and config.trainer != 'BasicTrainer':
+        # one XLA device: FSDP/tensor parallelism over a single rank reduces to plain single-device training
+        print(f'XLA device: running {config.trainer} as a single-device BasicTrainer')
+        TrainerClass = trainers.BasicTrainer
+    else:
+        TrainerClass = getattr(trainers, config.trainer)
     print(f'Creating trainer on process {rank} with world size {world_size}')
     trainer = TrainerClass(policy, config, config.seed, config.local_run_dir, reference_model=reference_model, rank=rank, world_size=world_size)
 
@@ -61,7 +66,7 @@ def main(config: DictConfig):
         print('Setting eval_every to', config.eval_every - config.eval_every % config.batch_size)
         config.eval_every = config.eval_every - config.eval_every % config.batch_size
 
-    if 'FSDP' in config.trainer and config.fsdp_port is None:
+    if 'FSDP' in config.trainer and config.fsdp_port is None and not USE_XLA:
         free_port = get_open_port()
         print('no FSDP port specified; using open port for FSDP:', free_port)
         config.fsdp_port = free_port
@@ -78,7 +83,7 @@ def main(config: DictConfig):
 
     os.environ['XDG_CACHE_HOME'] = get_local_dir(config.local_dirs)
     print('building policy')
-    model_kwargs = {'device_map': 'balanced'} if config.trainer == 'BasicTrainer' else {}
+    model_kwargs = {'device_map': 'balanced'} if config.trainer == 'BasicTrainer' and not USE_XLA else {}
     policy_dtype = getattr(torch, config.model.policy_dtype)
     policy = transformers.AutoModelForCausalLM.from_pretrained(
         config.model.name_or_path, cache_dir=get_local_dir(config.local_dirs), low_cpu_mem_usage=True, torch_dtype=policy_dtype, **model_kwargs)
@@ -102,7 +107,7 @@ def main(config: DictConfig):
             reference_model.load_state_dict(state_dict['state'])
         print('loaded pre-trained weights')
 
-    if 'FSDP' in config.trainer:
+    if 'FSDP' in config.trainer and not USE_XLA:
         world_size = torch.cuda.device_count()
         print('starting', world_size, 'processes for FSDP training')
         soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
