@@ -29,6 +29,8 @@ from utils import (
     get_block_class_from_model,
     rank0_print,
     get_local_dir,
+    USE_XLA,
+    xm,
 )
 import numpy as np
 import wandb
@@ -217,6 +219,12 @@ class BasicTrainer(object):
 
         self.policy = policy
         self.reference_model = reference_model
+        # device that batches are moved to; the original code passes the rank (cuda:rank)
+        self.device = xm.xla_device() if USE_XLA else self.rank
+        if USE_XLA:
+            self.policy.to(self.device)
+            if self.reference_model is not None:
+                self.reference_model.to(self.device)
 
         self.train_iterator = get_batch_iterator(**data_iterator_kwargs, split='train', n_epochs=config.n_epochs,
                                                  n_examples=config.n_examples, batch_size=config.batch_size,
@@ -372,7 +380,7 @@ class BasicTrainer(object):
                 for eval_batch in (
                 tqdm.tqdm(self.eval_batches, desc='Computing eval metrics') if self.rank == 0 else self.eval_batches):
                     local_eval_batch = slice_and_move_batch_for_device(eval_batch, self.rank, self.world_size,
-                                                                       self.rank)
+                                                                       self.device)
                     with torch.no_grad():
                         _, eval_metrics = self.get_batch_metrics(local_eval_batch, self.config.loss, train=False)
 
@@ -433,9 +441,9 @@ class BasicTrainer(object):
             batch_metrics = defaultdict(list)
             for microbatch_idx in range(self.config.gradient_accumulation_steps):
                 global_microbatch = slice_and_move_batch_for_device(batch, microbatch_idx,
-                                                                    self.config.gradient_accumulation_steps, self.rank)
+                                                                    self.config.gradient_accumulation_steps, self.device)
                 local_microbatch = slice_and_move_batch_for_device(global_microbatch, self.rank, self.world_size,
-                                                                   self.rank)
+                                                                   self.device)
                 loss, metrics = self.get_batch_metrics(local_microbatch, self.config.loss, train=True)
                 (loss / self.config.gradient_accumulation_steps).backward()
 
