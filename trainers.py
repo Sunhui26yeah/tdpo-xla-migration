@@ -160,6 +160,25 @@ def _tdpo_get_batch_logps(logits: torch.FloatTensor, reference_logits: torch.Flo
             (per_token_logps * loss_mask).sum(-1)
 
 
+def _metric_value(values: torch.Tensor):
+    """Host list of a metric tensor; on XLA the tensor is kept on device and read after the step's sync."""
+    return values.detach() if USE_XLA else values.cpu().numpy().tolist()
+
+
+def _metrics_to_lists(metrics: Dict) -> Dict:
+    """Read a dict of XLA metric tensors back to host lists with a single device-to-host transfer."""
+    keys = list(metrics.keys())
+    flat = torch.cat([metrics[k].reshape(-1).float() for k in keys])
+    xm.mark_step()
+    flat = flat.cpu().tolist()
+    out, i = {}, 0
+    for k in keys:
+        n = metrics[k].numel()
+        out[k] = flat[i:i + n]
+        i += n
+    return out
+
+
 def concatenated_inputs(batch: Dict[str, Union[List, torch.LongTensor]]) -> Dict[str, torch.LongTensor]:
     """Concatenate the chosen and rejected inputs into a single tensor.
 
@@ -313,20 +332,20 @@ class BasicTrainer(object):
             rejected_rewards = all_gather_if_needed(rejected_rewards, self.rank, self.world_size)
             reward_accuracies = all_gather_if_needed(reward_accuracies, self.rank, self.world_size)
 
-            metrics[f'rewards_{train_test}/chosen'] = chosen_rewards.cpu().numpy().tolist()
-            metrics[f'rewards_{train_test}/rejected'] = rejected_rewards.cpu().numpy().tolist()
-            metrics[f'rewards_{train_test}/accuracies'] = reward_accuracies.cpu().numpy().tolist()
-            metrics[f'rewards_{train_test}/margins'] = (chosen_rewards - rejected_rewards).cpu().numpy().tolist()
+            metrics[f'rewards_{train_test}/chosen'] = _metric_value(chosen_rewards)
+            metrics[f'rewards_{train_test}/rejected'] = _metric_value(rejected_rewards)
+            metrics[f'rewards_{train_test}/accuracies'] = _metric_value(reward_accuracies)
+            metrics[f'rewards_{train_test}/margins'] = _metric_value(chosen_rewards - rejected_rewards)
 
             all_device_chosen_position_kl = all_gather_if_needed(chosen_position_kl.detach(), self.rank, self.world_size)
             all_device_rejected_position_kl = all_gather_if_needed(rejected_position_kl.detach(), self.rank, self.world_size)
 
-            metrics[f'kl_{train_test}/chosen'] = all_device_chosen_position_kl.cpu().numpy().tolist()
-            metrics[f'kl_{train_test}/rejected'] = all_device_rejected_position_kl.cpu().numpy().tolist()
-            metrics[f'kl_{train_test}/margin'] = (all_device_chosen_position_kl - all_device_rejected_position_kl).cpu().numpy().tolist()
+            metrics[f'kl_{train_test}/chosen'] = _metric_value(all_device_chosen_position_kl)
+            metrics[f'kl_{train_test}/rejected'] = _metric_value(all_device_rejected_position_kl)
+            metrics[f'kl_{train_test}/margin'] = _metric_value(all_device_chosen_position_kl - all_device_rejected_position_kl)
 
             policy_rejected_logps = all_gather_if_needed(policy_rejected_logps.detach(), self.rank, self.world_size)
-            metrics[f'logps_{train_test}/rejected'] = policy_rejected_logps.cpu().numpy().tolist()
+            metrics[f'logps_{train_test}/rejected'] = _metric_value(policy_rejected_logps)
 
         elif loss_config.name == 'sft':
             policy_chosen_logits = self.policy(batch['chosen_input_ids'],
@@ -336,10 +355,10 @@ class BasicTrainer(object):
             losses = -policy_chosen_logps
 
         policy_chosen_logps = all_gather_if_needed(policy_chosen_logps.detach(), self.rank, self.world_size)
-        metrics[f'logps_{train_test}/chosen'] = policy_chosen_logps.cpu().numpy().tolist()
+        metrics[f'logps_{train_test}/chosen'] = _metric_value(policy_chosen_logps)
 
         all_devices_losses = all_gather_if_needed(losses.detach(), self.rank, self.world_size)
-        metrics[f'loss/{train_test}'] = all_devices_losses.cpu().numpy().tolist()
+        metrics[f'loss/{train_test}'] = _metric_value(all_devices_losses)
 
         return losses.mean(), metrics
 
@@ -383,6 +402,8 @@ class BasicTrainer(object):
                                                                        self.device)
                     with torch.no_grad():
                         _, eval_metrics = self.get_batch_metrics(local_eval_batch, self.config.loss, train=False)
+                    if USE_XLA:
+                        eval_metrics = _metrics_to_lists(eval_metrics)
 
                     for k, v in eval_metrics.items():
                         all_eval_metrics[k].extend(v)
@@ -446,6 +467,9 @@ class BasicTrainer(object):
                                                                    self.device)
                 loss, metrics = self.get_batch_metrics(local_microbatch, self.config.loss, train=True)
                 (loss / self.config.gradient_accumulation_steps).backward()
+                if USE_XLA:
+                    # cut the graph after each micro-batch; metrics are read after the sync
+                    metrics = _metrics_to_lists(metrics)
 
                 for k, v in metrics.items():
                     batch_metrics[k].extend(v)
@@ -454,6 +478,8 @@ class BasicTrainer(object):
             self.optimizer.step()
             self.scheduler.step()
             self.optimizer.zero_grad()
+            if USE_XLA:
+                xm.mark_step()
 
             step_time = time.time() - start_time
             examples_per_second = self.config.batch_size / step_time
