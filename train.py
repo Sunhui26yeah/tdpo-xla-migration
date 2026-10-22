@@ -94,6 +94,13 @@ def main(config: DictConfig):
     if config.loss.name == 'tdpo':
         print('building reference model')
         reference_model_dtype = getattr(torch, config.model.reference_dtype)
+        if USE_XLA and reference_model_dtype == torch.float16:
+            # the TPU has no float16 (the f16 forward gives wrong logits); use float32 with bf16_3x matmuls,
+            # which is at least as precise as float16
+            import torch_xla.backends
+            torch_xla.backends.set_mat_mul_precision('high')
+            reference_model_dtype = torch.float32
+            print('XLA device: reference model float16 -> float32 with matmul precision "high"')
         reference_model = transformers.AutoModelForCausalLM.from_pretrained(
             config.model.name_or_path, cache_dir=get_local_dir(config.local_dirs), low_cpu_mem_usage=True, torch_dtype=reference_model_dtype, **model_kwargs)
         disable_dropout(reference_model)
