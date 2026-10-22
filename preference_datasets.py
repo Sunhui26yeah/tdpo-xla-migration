@@ -225,6 +225,11 @@ def get_collate_fn(tokenizer) -> Callable[[List[Dict]], Dict[str, Union[List, to
                 for k in seq_keys:
                     pad_value = tokenizer.pad_token_id if k.endswith('_input_ids') else (-100 if k.endswith('_labels') else 0)
                     padded_batch[k] = pad_to_length(padded_batch[k], target, pad_value=pad_value)
+            # prompt tensors are moved to the device with the batch as well: bucket them too, keeping left padding
+            for k in [k for k in padded_batch if k.startswith('prompt_') and isinstance(padded_batch[k], torch.Tensor)]:
+                target = -(-padded_batch[k].shape[1] // 128) * 128
+                pad_value = tokenizer.pad_token_id if k.endswith('_input_ids') else 0
+                padded_batch[k] = pad_to_length(padded_batch[k].flip(dims=[1]), target, pad_value=pad_value).flip(dims=[1])
 
         return padded_batch
 
