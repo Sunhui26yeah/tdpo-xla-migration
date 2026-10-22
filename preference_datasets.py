@@ -1,7 +1,7 @@
 import datasets
 import torch
 from torch.utils.data import DataLoader, Dataset
-from utils import get_local_dir, TemporarilySeededRandom
+from utils import get_local_dir, TemporarilySeededRandom, USE_XLA, pad_to_length
 from torch.nn.utils.rnn import pad_sequence
 from collections import defaultdict
 import tqdm
@@ -214,6 +214,17 @@ def get_collate_fn(tokenizer) -> Callable[[List[Dict]], Dict[str, Union[List, to
                     padded_batch[k] = padded_batch[k].flip(dims=[1])
             else:
                 padded_batch[k] = [ex[k] for ex in batch]
+
+        if USE_XLA:
+            # XLA compiles one graph per input shape: pad chosen/rejected to a common multiple of 128 tokens
+            # (padding is masked out by the attention mask and the -100 labels)
+            seq_keys = [k for k in padded_batch if k.startswith(('chosen_', 'rejected_')) and isinstance(padded_batch[k], torch.Tensor)]
+            if seq_keys:
+                longest = max(padded_batch[k].shape[1] for k in seq_keys)
+                target = -(-longest // 128) * 128
+                for k in seq_keys:
+                    pad_value = tokenizer.pad_token_id if k.endswith('_input_ids') else (-100 if k.endswith('_labels') else 0)
+                    padded_batch[k] = pad_to_length(padded_batch[k], target, pad_value=pad_value)
 
         return padded_batch
 
