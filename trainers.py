@@ -104,7 +104,7 @@ def _get_batch_logps(logits: torch.FloatTensor, labels: torch.LongTensor,
     loss_mask = (labels != -100)
 
     # dummy token; we'll ignore the losses on these tokens later
-    labels[labels == -100] = 0
+    labels = labels.masked_fill(labels == -100, 0)
 
     per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
 
@@ -137,7 +137,7 @@ def _tdpo_get_batch_logps(logits: torch.FloatTensor, reference_logits: torch.Flo
     loss_mask = (labels != -100)
 
     # dummy token; we'll ignore the losses on these tokens later
-    labels[labels == -100] = 0
+    labels = labels.masked_fill(labels == -100, 0)
 
     vocab_logps = logits.log_softmax(-1)
 
