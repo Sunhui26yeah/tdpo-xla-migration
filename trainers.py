@@ -487,6 +487,8 @@ class BasicTrainer(object):
             batch_metrics['grad_norm'].append(grad_norm)
 
             self.batch_counter += 1
+            if USE_XLA and self.batch_counter in (50, 100):
+                self.write_xla_metrics_report(f'xla_metrics_step{self.batch_counter}.txt')
             self.example_counter += self.config.batch_size
 
             if last_log is None or time.time() - last_log > self.config.minimum_log_interval_secs:
@@ -502,6 +504,12 @@ class BasicTrainer(object):
             else:
                 rank0_print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
             #### END TRAINING ####
+
+    def write_xla_metrics_report(self, filename: str):
+        """Write the torch_xla debug metrics report (compilations, CPU fallbacks) to the run directory."""
+        import torch_xla.debug.metrics as met
+        with open(os.path.join(self.run_dir, filename), 'w') as f:
+            f.write(met.metrics_report())
 
     def clip_gradient(self):
         """Clip the gradient norm of the parameters of a non-FSDP policy."""

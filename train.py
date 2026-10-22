@@ -48,6 +48,8 @@ def worker_main(rank: int, world_size: int, config: DictConfig, policy: nn.Modul
 
     trainer.train()
     trainer.save()
+    if USE_XLA:
+        trainer.write_xla_metrics_report('xla_metrics_final.txt')
 
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
