@@ -1,3 +1,17 @@
+## TPU migration: result curves
+
+This repository records an agent-driven migration of the original code from NVIDIA GPUs to Google Cloud TPUs, part of the study *From GPU to TPU with Coding Agents: What Works, What Fails, and What It Costs*, submitted to the ICSE 2027 Software Engineering in Practice (SEIP) track. The original project's README follows below the figures.
+
+**Full runs: the original code on an NVIDIA L4 GPU and the migrated code on a TPU v5e-1 (Pythia-410M), with the paper's values (Pythia-2.8B) as references.** ([PDF](migration_figures/curves.pdf))
+
+![curves](migration_figures/curves.png)
+
+**Smoke test before the full run: the original code on the GPU against the migrated code on the TPU.** ([PDF](migration_figures/smoke_compare.pdf))
+
+![smoke_compare](migration_figures/smoke_compare.png)
+
+---
+
 # TDPO: Token-level Direct Preference Optimization
 
 This repo contains a reference implementation of the TDPO algorithm for training language models from preference data, as described in the paper [_Token-level Direct Preference Optimization_](https://arxiv.org/pdf/2404.11999.pdf) (ICML 2024). Our implementation is based on [DPO](https://github.com/eric-mitchell/direct-preference-optimization), and follows the same usage guidelines.
